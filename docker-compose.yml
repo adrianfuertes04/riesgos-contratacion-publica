@@ -1,0 +1,41 @@
+# Servicios del proyecto. Requiere Docker Desktop (con WSL2) en Windows.
+#   docker compose up -d mongo neo4j redis   -> solo bases de datos
+#   docker compose up -d --build             -> todo, app en http://localhost:8080
+# Los datos (data/) se generan antes con el pipeline (ver README).
+
+services:
+  mongo:
+    image: mongo:7.0
+    ports: ["27017:27017"]
+    volumes: [mongo-data:/data/db]
+
+  neo4j:
+    image: neo4j:5.26-community
+    ports: ["7474:7474", "7687:7687"]
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-tfm-password}
+      NEO4J_PLUGINS: '["graph-data-science"]'
+      NEO4J_server_memory_heap_max__size: 4G
+      NEO4J_server_memory_pagecache_size: 4G
+    volumes: [neo4j-data:/data]
+
+  redis:
+    image: redis:7.4-alpine
+    ports: ["6379:6379"]
+
+  api:
+    build: .
+    environment:
+      TFM_DATA_DIR: /data
+      TFM_CORS_ORIGINS: http://localhost:8080
+    volumes: [./data:/data:ro]
+    ports: ["8000:8000"]
+
+  frontend:
+    build: ./frontend
+    depends_on: [api]
+    ports: ["8080:80"]
+
+volumes:
+  mongo-data:
+  neo4j-data:
