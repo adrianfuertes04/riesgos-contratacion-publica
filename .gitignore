@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Datos: solo se versionan muestras pequeñas
+data/raw/*
+data/silver/*
+data/gold/*
+!data/**/.gitkeep
+data/samples/*
+!data/samples/README.md
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# Entorno
+.env
+.DS_Store
+Thumbs.db
