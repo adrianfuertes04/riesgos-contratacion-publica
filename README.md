@@ -17,31 +17,25 @@ Trabajo Fin de Máster (Máster en Análisis y Visualización de Datos Masivos, 
 El sistema sigue una arquitectura *medallion* (`raw → silver → gold`) desacoplada del servidor de aplicación: el procesado pesado se resuelve en batch sobre ficheros Parquet y la API sirve consultas analíticas en memoria con DuckDB en menos de 100 ms.
 
 ```mermaid
-flowchart LR
-    subgraph Fuentes["Fuentes abiertas"]
-        PLACSP["PLACSP (Atom / CODICE .zip)"]
-        REF["Codelists CODICE + GISCO NUTS"]
-    end
+flowchart TD
+    PLACSP["PLACSP · Feeds Atom / CODICE (.zip)"]
+    REF["Listas oficiales CODICE + Geometrías NUTS (Eurostat)"]
 
-    subgraph Almacenamiento["Capas de datos (Parquet)"]
-        RAW["data/raw/ · ZIP inmutables + SHA-256"]
-        SILVER["data/silver/ · tenders, lots, awards"]
-        GOLD["data/gold/ · contracts, buyers, companies, alerts"]
-    end
+    RAW["Capa Raw (data/raw/) · ZIP inmutables + manifiesto SHA-256"]
+    SILVER["Capa Silver (data/silver/) · Parquet anual: tenders, lots, awards"]
+    GOLD["Capa Gold (data/gold/) · Indicadores I1-I8, contratos, órganos, empresas y alertas"]
 
-    subgraph Consumo["Servicio y análisis"]
-        API["FastAPI + DuckDB en memoria"]
-        NEO["Neo4j + GDS (grafo)"]
-        WEB["React + Vite + ECharts SVG"]
-    end
+    API["API REST · FastAPI + DuckDB en memoria"]
+    NEO["Grafo · Neo4j + Graph Data Science"]
+    WEB["Aplicación Web · React + TypeScript + ECharts SVG"]
 
-    PLACSP -->|"pipelines/ingest"| RAW
-    RAW -->|"lxml + PyArrow"| SILVER
+    PLACSP -->|"pipelines/ingest (Range + SHA-256)"| RAW
+    RAW -->|"pipelines/transform (lxml + PyArrow)"| SILVER
     REF --> SILVER
-    SILVER -->|"DuckDB SQL (I1-I8)"| GOLD
+    SILVER -->|"pipelines/indicators (DuckDB SQL)"| GOLD
     GOLD --> API
-    GOLD -->|"CSV import"| NEO
-    API -->|"REST JSON / CSV"| WEB
+    GOLD -->|"pipelines/graph (CSV)"| NEO
+    API -->|"JSON / Exportación CSV"| WEB
 ```
 
 | Capa | Directorio / Módulo | Tecnología | Responsabilidad |
