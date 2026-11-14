@@ -14,27 +14,46 @@ Trabajo Fin de Máster (Máster en Análisis y Visualización de Datos Masivos, 
 
 ## Arquitectura
 
-```text
-PLACSP (Atom/CODICE .zip)
-   │
-   ▼  pipelines/ingest/placsp.py  (descarga idempotente, manifiesto SHA-256)
-data/raw/placsp/
-   │
-   ▼  pipelines/transform/        (parseo en streaming con lxml + PyArrow)
-data/silver/                      (tenders · lots · awards, Parquet por año)
-   │
-   ▼  pipelines/indicators/       (DuckDB SQL + parámetros configurables)
-data/gold/                        (contracts · buyers · companies · pairs · alerts · territories)
-   │                                  │
-   ▼                                  ▼
-api/ (FastAPI + DuckDB)         pipelines/graph/ → Neo4j (fase 3)
-   │
-   ▼
-frontend/ (React · Vite · Tailwind · ECharts SVG)
+El sistema sigue una arquitectura *medallion* (`raw → silver → gold`) desacoplada del servidor de aplicación: el procesado pesado se resuelve en batch sobre ficheros Parquet y la API sirve consultas analíticas en memoria con DuckDB en menos de 100 ms.
+
+```mermaid
+flowchart LR
+    subgraph Fuentes["Fuentes abiertas"]
+        PLACSP["PLACSP (Atom / CODICE .zip)"]
+        REF["Codelists CODICE + GISCO NUTS"]
+    end
+
+    subgraph Almacenamiento["Capas de datos (Parquet)"]
+        RAW["data/raw/ · ZIP inmutables + SHA-256"]
+        SILVER["data/silver/ · tenders, lots, awards"]
+        GOLD["data/gold/ · contracts, buyers, companies, alerts"]
+    end
+
+    subgraph Consumo["Servicio y análisis"]
+        API["FastAPI + DuckDB en memoria"]
+        NEO["Neo4j + GDS (grafo)"]
+        WEB["React + Vite + ECharts SVG"]
+    end
+
+    PLACSP -->|"pipelines/ingest"| RAW
+    RAW -->|"lxml + PyArrow"| SILVER
+    REF --> SILVER
+    SILVER -->|"DuckDB SQL (I1-I8)"| GOLD
+    GOLD --> API
+    GOLD -->|"CSV import"| NEO
+    API -->|"REST JSON / CSV"| WEB
 ```
 
-- Las decisiones técnicas (DuckDB frente a PySpark en fase 0, ECharts, claves de entidad, etc.) están documentadas en [`docs/decisiones.md`](docs/decisiones.md).
-- El inventario de fuentes y licencias está en [`docs/fuentes.md`](docs/fuentes.md).
+| Capa | Directorio / Módulo | Tecnología | Responsabilidad |
+|---|---|---|---|
+| **Ingesta (`raw`)** | `pipelines/ingest/` · `data/raw/` | `requests` | Descarga idempotente con reanudación HTTP (`Range`), control de integridad SHA-256 y registro en `manifest.jsonl`. |
+| **Normalización (`silver`)** | `pipelines/transform/` · `data/silver/` | `lxml`, `pyarrow`, `duckdb` | Parseo en *streaming* de feeds Atom/CODICE, tipado estricto, deduplicación de versiones por expediente y particionado anual en Parquet. |
+| **Indicadores (`gold`)** | `pipelines/indicators/` · `data/gold/` | `duckdb` | Cálculo de los indicadores `I1`–`I8`, puntuaciones de riesgo agregadas, HHI, validación/seudonimización de NIF y tablas listas para consulta. |
+| **Grafo** | `pipelines/graph/` | `neo4j` | Exportación de nodos (órganos, empresas, licitaciones, lotes) y relaciones para análisis de red y algoritmos GDS. |
+| **API** | `api/` | `FastAPI`, `Pydantic`, `duckdb` | 16 endpoints REST sobre las vistas Parquet de la capa `gold`, con búsqueda, subgrafos y exportación de alertas a CSV. |
+| **Frontend** | `frontend/` | `React`, `TypeScript`, `Tailwind`, `ECharts` | Cuadro de mando interactivo, coropletas territoriales, explorador de grafo de fuerzas y fichas de detalle con exportación SVG. |
+
+- Las decisiones de diseño (ADRs) están justificadas en [`docs/decisiones.md`](docs/decisiones.md) y el inventario de fuentes en [`docs/fuentes.md`](docs/fuentes.md).
 
 ---
 
