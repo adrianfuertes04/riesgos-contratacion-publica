@@ -23,10 +23,19 @@ def client(tmp_path_factory: pytest.TempPathFactory) -> Iterator[TestClient]:
     app.dependency_overrides.clear()
 
 
-def test_kpis(client: TestClient) -> None:
+def test_kpis_health_and_indicators(client: TestClient) -> None:
+    health = client.get("/api/health").json()
+    assert health == {"status": "ok", "n_contracts": 54}
     body = client.get("/api/kpis").json()
     assert body["n_contracts"] == 54
     assert body["n_buyers"] == 1
+    inds = client.get("/api/indicators").json()
+    by_code = {i["indicator"]: i for i in inds}
+    assert set(by_code) == {f"I{k}" for k in range(1, 9)}
+    assert by_code["I3"]["n_alerts"] == 1
+    assert by_code["I3"]["level"] == "contrato"
+    assert by_code["I8"]["n_alerts"] == 1
+    assert by_code["I8"]["pct_contracts"] is None
 
 
 def test_meta(client: TestClient) -> None:
@@ -55,6 +64,18 @@ def test_alerts_filters_and_paging(client: TestClient) -> None:
     assert i3["total"] == 1
     assert "15000" in i3["items"][0]["explanation"]
     assert client.get("/api/alerts", params={"sort": "nope"}).status_code == 422
+    # El comodín literal '%' no debe coincidir con todas las filas.
+    pct = client.get("/api/alerts", params={"q": "100 %"}).json()
+    assert all("100 %" in a["explanation"] or "100 %" in (a["buyer_name"] or "") for a in pct["items"])
+    # Exportación CSV con BOM UTF-8 y filtros aplicados.
+    csv_resp = client.get("/api/alerts/export", params={"indicator": "I3"})
+    assert csv_resp.status_code == 200
+    assert csv_resp.headers["content-type"].startswith("text/csv")
+    text = csv_resp.content.decode("utf-8-sig")
+    lines = [line for line in text.splitlines() if line]
+    assert len(lines) == 2
+    assert lines[0].startswith("level,indicator,")
+    assert "I3" in lines[1]
 
 
 def test_territories_search_graph(client: TestClient) -> None:
@@ -63,6 +84,10 @@ def test_territories_search_graph(client: TestClient) -> None:
     assert client.get("/api/territories/ES30").json()["buyers"][0]["buyer_id"] == "ORG1"
     found = client.get("/api/search", params={"q": "empresa"}).json()
     assert {r["kind"] for r in found} == {"company"}
+    assert client.get("/api/search", params={"q": "   "}).json() == []
+    assert client.get("/api/search", params={"q": "%_"}).json() == []
     g = client.get("/api/graph", params={"node": "buyer:ORG1", "depth": 2}).json()
     assert len(g["nodes"]) == 3 and len(g["edges"]) == 2
     assert client.get("/api/graph", params={"node": "x:1"}).status_code == 422
+    assert client.get("/api/graph", params={"node": "buyer:ORG1", "min_risk": 150}).status_code == 422
+    assert client.get("/api/graph", params={"node": "buyer:ORG1", "min_amount": -5}).status_code == 422

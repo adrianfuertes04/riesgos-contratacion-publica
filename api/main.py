@@ -6,12 +6,15 @@ Arranque en desarrollo:
 
 from __future__ import annotations
 
+import csv
+import io
 import os
 from functools import lru_cache
 from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 
 from api.db import GoldDB
 from api.models import (
@@ -24,6 +27,7 @@ from api.models import (
     Graph,
     GraphEdge,
     GraphNode,
+    IndicatorSummary,
     Kpis,
     MonthlyPoint,
     Page,
@@ -88,12 +92,31 @@ def _require(row: dict[str, Any] | None, what: str) -> dict[str, Any]:
     return row
 
 
+def _escape_like(text: str) -> str:
+    """Escapa comodines de LIKE/ILIKE para buscar texto literal."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _csv_safe(value: Any) -> str:
+    """Serializa un valor a texto CSV neutralizando fórmulas en hojas de cálculo."""
+    if value is None:
+        return ""
+    text = str(value)
+    if text and text[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + text
+    return text
+
+
 # --------------------------------------------------------------------------- generales
 
 
 @app.get("/api/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health(db: DB) -> dict[str, Any]:
+    try:
+        row = db.one("SELECT n_contracts FROM kpis")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Base de datos no disponible") from exc
+    return {"status": "ok", "n_contracts": int(row["n_contracts"]) if row else 0}
 
 
 @app.get("/api/meta")
@@ -105,6 +128,32 @@ def meta() -> dict[str, Any]:
         "contract_type": codelist("contract_type"),
         "buyer_type": codelist("buyer_type"),
     }
+
+
+@app.get("/api/indicators", response_model=list[IndicatorSummary])
+def indicators_summary(db: DB) -> list[dict[str, Any]]:
+    rows = db.query(
+        """WITH tot AS (SELECT NULLIF(n_contracts, 0) AS n_contracts FROM kpis),
+           agg AS (
+               SELECT indicator, any_value(level) AS level, count(*) AS n_alerts, sum(amount) AS total_amount
+               FROM alerts GROUP BY indicator
+           )
+           SELECT a.indicator, a.level, a.n_alerts, a.total_amount,
+                  CASE WHEN a.level = 'contrato' THEN a.n_alerts::DOUBLE / tot.n_contracts END AS pct_contracts
+           FROM agg a CROSS JOIN tot"""
+    )
+    by_code = {r["indicator"]: r for r in rows}
+    return [
+        {
+            "indicator": code,
+            "name": name,
+            "level": by_code[code]["level"] if code in by_code else None,
+            "n_alerts": int(by_code[code]["n_alerts"]) if code in by_code else 0,
+            "total_amount": by_code[code]["total_amount"] if code in by_code else 0.0,
+            "pct_contracts": by_code[code]["pct_contracts"] if code in by_code else None,
+        }
+        for code, name in INDICATORS.items()
+    ]
 
 
 @app.get("/api/kpis", response_model=Kpis)
@@ -204,6 +253,44 @@ def company_profile(company_id: str, db: DB) -> dict[str, Any]:
 # --------------------------------------------------------------------------- alertas
 
 
+def _alerts_where(
+    *,
+    indicator: str | None,
+    level: str | None,
+    buyer_id: str | None,
+    company_id: str | None,
+    q: str | None,
+    min_amount: float | None,
+    min_risk: float | None,
+) -> tuple[str, list[Any]]:
+    q_clean = q.strip() if q else ""
+    pattern = f"%{_escape_like(q_clean)}%" if q_clean else None
+    where = """WHERE (? IS NULL OR indicator = ?) AND (? IS NULL OR level = ?)
+               AND (? IS NULL OR buyer_id = ?) AND (? IS NULL OR company_id = ?)
+               AND (? IS NULL OR amount >= ?) AND (? IS NULL OR risk_score >= ?)
+               AND (? IS NULL OR buyer_name ILIKE ? ESCAPE '\\'
+                    OR company_name ILIKE ? ESCAPE '\\' OR explanation ILIKE ? ESCAPE '\\')"""
+    params: list[Any] = [
+        indicator,
+        indicator,
+        level,
+        level,
+        buyer_id,
+        buyer_id,
+        company_id,
+        company_id,
+        min_amount,
+        min_amount,
+        min_risk,
+        min_risk,
+        pattern,
+        pattern,
+        pattern,
+        pattern,
+    ]
+    return where, params
+
+
 @app.get("/api/alerts", response_model=Page[Alert])
 def alerts(
     db: DB,
@@ -212,23 +299,69 @@ def alerts(
     buyer_id: str | None = None,
     company_id: str | None = None,
     q: str | None = None,
+    min_amount: Annotated[float | None, Query(ge=0)] = None,
+    min_risk: Annotated[float | None, Query(ge=0, le=100)] = None,
     sort: Literal["ref_date", "amount", "risk_score", "indicator", "buyer_name"] = "ref_date",
     order: Literal["asc", "desc"] = "desc",
     page: Annotated[int, Query(ge=1)] = 1,
     size: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> dict[str, Any]:
-    pattern = f"%{q}%" if q else None
-    where = """WHERE (? IS NULL OR indicator = ?) AND (? IS NULL OR level = ?)
-               AND (? IS NULL OR buyer_id = ?) AND (? IS NULL OR company_id = ?)
-               AND (? IS NULL OR buyer_name ILIKE ? OR company_name ILIKE ? OR explanation ILIKE ?)"""
-    params = [indicator, indicator, level, level, buyer_id, buyer_id, company_id, company_id]
-    params += [pattern, pattern, pattern, pattern]
+    where, params = _alerts_where(
+        indicator=indicator,
+        level=level,
+        buyer_id=buyer_id,
+        company_id=company_id,
+        q=q,
+        min_amount=min_amount,
+        min_risk=min_risk,
+    )
     total = db.one(f"SELECT count(*) AS n FROM alerts {where}", params)
     items = db.query(
         f"SELECT {ALERT_COLS} FROM alerts {where} ORDER BY {sort} {order} NULLS LAST, buyer_id LIMIT ? OFFSET ?",
         [*params, size, (page - 1) * size],
     )
     return {"items": items, "total": total["n"] if total else 0, "page": page, "size": size}
+
+
+@app.get("/api/alerts/export")
+def export_alerts(
+    db: DB,
+    indicator: str | None = None,
+    level: Literal["contrato", "relacion", "organismo"] | None = None,
+    buyer_id: str | None = None,
+    company_id: str | None = None,
+    q: str | None = None,
+    min_amount: Annotated[float | None, Query(ge=0)] = None,
+    min_risk: Annotated[float | None, Query(ge=0, le=100)] = None,
+    sort: Literal["ref_date", "amount", "risk_score", "indicator", "buyer_name"] = "ref_date",
+    order: Literal["asc", "desc"] = "desc",
+    limit: Annotated[int, Query(ge=1, le=10_000)] = 1000,
+) -> Response:
+    where, params = _alerts_where(
+        indicator=indicator,
+        level=level,
+        buyer_id=buyer_id,
+        company_id=company_id,
+        q=q,
+        min_amount=min_amount,
+        min_risk=min_risk,
+    )
+    rows = db.query(
+        f"SELECT {ALERT_COLS} FROM alerts {where} ORDER BY {sort} {order} NULLS LAST, buyer_id LIMIT ?",
+        [*params, limit],
+    )
+    cols = [c.strip() for c in ALERT_COLS.split(",")]
+    buf = io.StringIO()
+    buf.write("\ufeff")  # BOM UTF-8 para abrir tildes correctamente en Excel
+    writer = csv.writer(buf)
+    writer.writerow(cols)
+    for row in rows:
+        writer.writerow([_csv_safe(row.get(c)) for c in cols])
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="alertas.csv"'},
+    )
 
 
 # --------------------------------------------------------------------------- territorio
@@ -257,15 +390,18 @@ def territory_profile(code: str, db: DB) -> dict[str, Any]:
 def search(
     db: DB, q: Annotated[str, Query(min_length=2)], limit: Annotated[int, Query(ge=1, le=50)] = 20
 ) -> list[dict[str, Any]]:
-    pattern = f"%{q}%"
-    nif = q.strip().upper()
+    cleaned = q.strip()
+    if len(cleaned) < 2:
+        return []
+    pattern = f"%{_escape_like(cleaned)}%"
+    nif = cleaned.upper()
     return db.query(
         """SELECT * FROM (
                SELECT 'buyer' AS kind, buyer_id AS id, name, nif, n_contracts, amount FROM buyers
-               WHERE name ILIKE ? OR nif = ?
+               WHERE name ILIKE ? ESCAPE '\\' OR nif = ?
                UNION ALL
                SELECT 'company', company_id, name, nif, n_contracts, amount FROM companies
-               WHERE name ILIKE ? OR nif = ?
+               WHERE name ILIKE ? ESCAPE '\\' OR nif = ?
            ) ORDER BY amount DESC NULLS LAST LIMIT ?""",
         [pattern, nif, pattern, nif, limit],
     )
@@ -277,11 +413,11 @@ def graph(
     node: Annotated[str, Query(description="buyer:<id> o company:<id>")],
     depth: Annotated[int, Query(ge=1, le=2)] = 1,
     limit: Annotated[int, Query(ge=1, le=100)] = 25,
-    year: int | None = None,
-    min_amount: float | None = None,
-    cpv: str | None = None,
+    year: Annotated[int | None, Query(ge=2000, le=2100)] = None,
+    min_amount: Annotated[float | None, Query(ge=0)] = None,
+    cpv: Annotated[str | None, Query(min_length=2, max_length=2)] = None,
     nuts: str | None = None,
-    min_risk: float | None = None,
+    min_risk: Annotated[float | None, Query(ge=0, le=100)] = None,
 ) -> dict[str, Any]:
     kind, _, ref = node.partition(":")
     if kind not in ("buyer", "company") or not ref:

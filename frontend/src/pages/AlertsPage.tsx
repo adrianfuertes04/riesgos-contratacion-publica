@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import type { Alert, Page } from "../api";
+import { apiUrl, type Alert, type Page } from "../api";
 import { AlertsTable } from "../components/tables";
 import { Card, Disclaimer, Status } from "../components/ui";
 import { fmtInt } from "../format";
@@ -123,6 +123,13 @@ export default function AlertsPage() {
                 Limpiar
               </button>
             )}
+            <a
+              href={apiUrl("/alerts/export", { indicator, level, q: query, sort, order })}
+              download="alertas.csv"
+              className="rounded border border-slate-300 px-2 py-1 text-slate-700 hover:bg-slate-50"
+            >
+              Exportar CSV
+            </a>
           </div>
         }
       >

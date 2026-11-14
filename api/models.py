@@ -214,3 +214,12 @@ class Graph(BaseModel):
     nodes: list[GraphNode]
     edges: list[GraphEdge]
     truncated: bool
+
+
+class IndicatorSummary(BaseModel):
+    indicator: str
+    name: str
+    level: Literal["contrato", "relacion", "organismo"] | None
+    n_alerts: int
+    total_amount: float | None
+    pct_contracts: float | None

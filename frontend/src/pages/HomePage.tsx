@@ -1,18 +1,46 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { enc, type BuyerSummary, type CompanySummary, type CpvDivision, type Kpis, type MonthlyPoint } from "../api";
+import {
+  enc,
+  type BuyerSummary,
+  type CompanySummary,
+  type CpvDivision,
+  type IndicatorSummary,
+  type Kpis,
+  type MonthlyPoint,
+} from "../api";
 import EChart, { type EChartsOption } from "../components/EChart";
 import { Card, Disclaimer, Kpi, RiskBadge, Status } from "../components/ui";
 import { fmtDate, fmtEur, fmtEurShort, fmtInt, fmtPct } from "../format";
 import { useApi } from "../hooks";
 
+type RankSort = "amount" | "risk_score";
+
+function SortToggle({ value, onChange }: { value: RankSort; onChange: (v: RankSort) => void }) {
+  const cls = (active: boolean) =>
+    `rounded px-2 py-0.5 text-xs font-medium ${active ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"}`;
+  return (
+    <div className="flex gap-1">
+      <button type="button" className={cls(value === "amount")} onClick={() => onChange("amount")}>
+        Importe
+      </button>
+      <button type="button" className={cls(value === "risk_score")} onClick={() => onChange("risk_score")}>
+        Riesgo
+      </button>
+    </div>
+  );
+}
+
 export default function HomePage() {
+  const [buyerSort, setBuyerSort] = useState<RankSort>("amount");
+  const [companySort, setCompanySort] = useState<RankSort>("amount");
   const kpis = useApi<Kpis>("/kpis");
   const monthly = useApi<MonthlyPoint[]>("/monthly");
   const cpv = useApi<CpvDivision[]>("/cpv", { limit: 10 });
-  const buyers = useApi<BuyerSummary[]>("/buyers", { limit: 10 });
-  const companies = useApi<CompanySummary[]>("/companies", { limit: 10 });
+  const indicators = useApi<IndicatorSummary[]>("/indicators");
+  const buyers = useApi<BuyerSummary[]>("/buyers", { sort: buyerSort, limit: 10 });
+  const companies = useApi<CompanySummary[]>("/companies", { sort: companySort, limit: 10 });
 
   const monthlyOption = useMemo<EChartsOption>(() => {
     const rows = monthly.data ?? [];
@@ -53,6 +81,20 @@ export default function HomePage() {
     };
   }, [cpv.data]);
 
+  const indicatorsOption = useMemo<EChartsOption>(() => {
+    const rows = [...(indicators.data ?? [])].reverse();
+    return {
+      tooltip: { trigger: "axis", confine: true, valueFormatter: (v) => `${fmtInt(v as number)} alertas` },
+      grid: { left: 230, right: 30, top: 10, bottom: 30 },
+      xAxis: { type: "value" },
+      yAxis: {
+        type: "category",
+        data: rows.map((r) => `${r.indicator} · ${r.name.slice(0, 30)}`),
+      },
+      series: [{ type: "bar", data: rows.map((r) => r.n_alerts), itemStyle: { color: "#f59e0b" } }],
+    };
+  }, [indicators.data]);
+
   const k = kpis.data;
   return (
     <div className="space-y-6">
@@ -80,8 +122,16 @@ export default function HomePage() {
         </Card>
       </div>
 
+      <Card title="Distribución de alertas por indicador (I1–I8)">
+        <Status loading={indicators.loading} error={indicators.error} />
+        {indicators.data && <EChart option={indicatorsOption} height={280} />}
+      </Card>
+
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card title="Órganos con mayor importe adjudicado">
+        <Card
+          title={buyerSort === "amount" ? "Órganos con mayor importe adjudicado" : "Órganos con mayor puntuación de riesgo"}
+          actions={<SortToggle value={buyerSort} onChange={setBuyerSort} />}
+        >
           <Status loading={buyers.loading} error={buyers.error} />
           <ul className="divide-y divide-slate-100 text-sm">
             {buyers.data?.map((b) => (
@@ -96,7 +146,10 @@ export default function HomePage() {
             ))}
           </ul>
         </Card>
-        <Card title="Empresas con mayor importe adjudicado">
+        <Card
+          title={companySort === "amount" ? "Empresas con mayor importe adjudicado" : "Empresas con mayor puntuación de riesgo"}
+          actions={<SortToggle value={companySort} onChange={setCompanySort} />}
+        >
           <Status loading={companies.loading} error={companies.error} />
           <ul className="divide-y divide-slate-100 text-sm">
             {companies.data?.map((c) => (

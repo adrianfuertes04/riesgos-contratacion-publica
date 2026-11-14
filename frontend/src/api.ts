@@ -216,14 +216,27 @@ export interface Meta {
   buyer_type: Record<string, string>;
 }
 
+export interface IndicatorSummary {
+  indicator: string;
+  name: string;
+  level: "contrato" | "relacion" | "organismo" | null;
+  n_alerts: number;
+  total_amount: number | null;
+  pct_contracts: number | null;
+}
+
 type Params = Record<string, string | number | null | undefined>;
 
-export async function get<T>(path: string, params: Params = {}): Promise<T> {
+export function apiUrl(path: string, params: Params = {}): string {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
     if (v !== null && v !== undefined && v !== "") qs.set(k, String(v));
   }
-  const url = `/api${path}${qs.size ? `?${qs}` : ""}`;
+  return `/api${path}${qs.size ? `?${qs}` : ""}`;
+}
+
+export async function get<T>(path: string, params: Params = {}): Promise<T> {
+  const url = apiUrl(path, params);
   const resp = await fetch(url);
   if (!resp.ok) {
     const body = await resp.json().catch(() => ({}));
